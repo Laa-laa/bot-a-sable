@@ -21,7 +21,7 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         print(f'Connecté en tant que {self.user} (ID: {self.user.id})')
-        print('------')
+        print('-----')
 
 bot = MyBot()
 
