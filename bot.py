@@ -1,9 +1,12 @@
 import os
 import random
 import json
+<<<<<<< HEAD
 import aiohttp
 import urllib.parse
 import urllib.request
+=======
+>>>>>>> main
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -16,6 +19,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 # Fichier de stockage de l'état du jeu (chemin absolu)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GAME_STATE_FILE = os.path.join(SCRIPT_DIR, "wordle_state.json")
+<<<<<<< HEAD
 SCORE_FILE = os.path.join(SCRIPT_DIR, "scores.json")
 
 # Scores en mémoire
@@ -51,6 +55,8 @@ def add_score(user_id: str, points: int):
     scores[user_id] = scores.get(user_id, 0) + points
     save_scores()
     return scores[user_id]
+=======
+>>>>>>> main
 
 WORDLE_WORDS = [
     "abime", "acier", "adieu", "agile", "aigle", "album", "alpin",
@@ -198,6 +204,7 @@ async def roll(interaction: discord.Interaction, faces: int = 6):
         f"🎲 Tu as lancé un dé à {faces} faces et tu as obtenu : **{result}**\n"
         f"➕ **+{result} points** | 🏆 Score total : **{total} pts**"
     )
+
 
 
 @bot.tree.command(name="coin", description="Lance une pièce (Pile ou Face)")
@@ -389,8 +396,94 @@ async def score_cmd(interaction: discord.Interaction):
     )
 
 
+
+WORDS_5 = [w for w in WORDLE_WORDS if len(w) == 5]
+wordle_lock = __import__('asyncio').Lock()
+
+
+def new_word():
+    return random.choice(WORDS_5)
+
+
+def save_game_state():
+    try:
+        with open(GAME_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(game_state, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[WORDLE] Erreur sauvegarde: {e}")
+
+
+@bot.tree.command(name="wordle", description="Tente de trouver le mot du jour")
+@app_commands.describe(mot="Ton mot (5 lettres)")
+async def wordle(interaction: discord.Interaction, mot: str):
+    await interaction.response.defer()
+
+    user_id = str(interaction.user.id)
+    guess = mot.strip().lower()
+
+    # Validation en premier, avant tout traitement
+    if len(guess) != 5 or not guess.isalpha():
+        await interaction.followup.send(
+            "Ton mot doit contenir exactement 5 lettres (A-Z) !",
+            ephemeral=True,
+        )
+        return
+
+    # Verrou : un seul traitement à la fois pour éviter toute race condition
+    async with wordle_lock:
+
+        # Initialiser le joueur s'il n'existe pas en mémoire
+        if user_id not in game_state:
+            word = new_word()
+            game_state[user_id] = {"word": word, "attempts": 0}
+            save_game_state()
+            print(f"[WORDLE] Nouveau joueur {user_id}: mot = {word}")
+
+        player = game_state[user_id]
+        target = player["word"]
+
+        # Incrémenter les essais
+        player["attempts"] += 1
+        attempts_left = 6 - player["attempts"]
+        save_game_state()
+
+        print(f"[WORDLE] Joueur {user_id}: essai #{player['attempts']} = '{guess}' (cible: '{target}')")
+
+        # Évaluation
+        score = evaluate_guess(guess, target)
+
+        # Victoire
+        if guess == target:
+            await interaction.followup.send(
+                f"{score}\n✅ **Bravo !** Tu as trouvé le mot **{target.upper()}** en {player['attempts']} essai(s) ! 🎉"
+            )
+            w = new_word()
+            game_state[user_id] = {"word": w, "attempts": 0}
+            save_game_state()
+            print(f"[WORDLE] Joueur {user_id}: victoire ! Nouveau mot = {w}")
+            return
+
+        # Défaite
+        if attempts_left <= 0:
+            loss_message = random.choice(LOSS_MESSAGES).format(word=target.upper())
+            await interaction.followup.send(loss_message)
+            w = new_word()
+            game_state[user_id] = {"word": w, "attempts": 0}
+            save_game_state()
+            print(f"[WORDLE] Joueur {user_id}: défaite ! Nouveau mot = {w}")
+            return
+
+        # Essai normal
+        await interaction.followup.send(
+            f"{score}\nEssai: **{guess.upper()}** | Essais restants: **{attempts_left}/6**"
+        )
+
+
 if __name__ == "__main__":
+<<<<<<< HEAD
     load_scores()
+=======
+>>>>>>> main
     load_state()
 
     if not TOKEN:
