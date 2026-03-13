@@ -1,6 +1,9 @@
 import os
 import random
 import json
+import aiohttp
+import urllib.parse
+import urllib.request
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -13,6 +16,41 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 # Fichier de stockage de l'état du jeu (chemin absolu)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 GAME_STATE_FILE = os.path.join(SCRIPT_DIR, "wordle_state.json")
+SCORE_FILE = os.path.join(SCRIPT_DIR, "scores.json")
+
+# Scores en mémoire
+scores = {}
+
+
+def load_scores():
+    """Charge les scores depuis le fichier JSON."""
+    global scores
+    if os.path.exists(SCORE_FILE):
+        try:
+            with open(SCORE_FILE, 'r', encoding='utf-8') as f:
+                scores = json.load(f)
+                print(f"[SCORE] Scores chargés: {len(scores)} joueur(s)")
+        except Exception as e:
+            print(f"[SCORE] Erreur lors du chargement: {e}")
+            scores = {}
+    else:
+        scores = {}
+
+
+def save_scores():
+    """Sauvegarde les scores dans le fichier JSON."""
+    try:
+        with open(SCORE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(scores, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[SCORE] Erreur lors de la sauvegarde: {e}")
+
+
+def add_score(user_id: str, points: int):
+    """Ajoute des points à un joueur et sauvegarde."""
+    scores[user_id] = scores.get(user_id, 0) + points
+    save_scores()
+    return scores[user_id]
 
 WORDLE_WORDS = [
     "abime", "acier", "adieu", "agile", "aigle", "album", "alpin",
@@ -154,14 +192,25 @@ async def roll(interaction: discord.Interaction, faces: int = 6):
         return
 
     result = random.randint(1, faces)
-    await interaction.response.send_message(f"🎲 Tu as lancé un dé à {faces} faces et tu as obtenu : **{result}**")
+    user_id = str(interaction.user.id)
+    total = add_score(user_id, result)
+    await interaction.response.send_message(
+        f"🎲 Tu as lancé un dé à {faces} faces et tu as obtenu : **{result}**\n"
+        f"➕ **+{result} points** | 🏆 Score total : **{total} pts**"
+    )
 
 
 @bot.tree.command(name="coin", description="Lance une pièce (Pile ou Face)")
 async def coin(interaction: discord.Interaction):
     result = random.choice(["Pile", "Face"])
     emoji = "🪙"
-    await interaction.response.send_message(f"{emoji} La pièce est tombée sur : **{result}**")
+    user_id = str(interaction.user.id)
+    points = 15
+    total = add_score(user_id, points)
+    await interaction.response.send_message(
+        f"{emoji} La pièce est tombée sur : **{result}**\n"
+        f"➕ **+{points} points** | 🏆 Score total : **{total} pts**"
+    )
 
 
 WORDS_5 = [w for w in WORDLE_WORDS if len(w) == 5]
@@ -221,8 +270,15 @@ async def wordle(interaction: discord.Interaction, mot: str):
 
         # Victoire
         if guess == target:
+            attempts_done = player['attempts']
+            # Bonus selon le nombre d'essais : 50 pts + jusqu'à 50 pts de bonus
+            base_points = 50
+            bonus = max(0, (6 - attempts_done) * 10)
+            gained = base_points + bonus
+            wordle_total = add_score(user_id, gained)
             await interaction.followup.send(
-                f"{score}\n✅ **Bravo !** Tu as trouvé le mot **{target.upper()}** en {player['attempts']} essai(s) ! 🎉"
+                f"{score}\n✅ **Bravo !** Tu as trouvé le mot **{target.upper()}** en {attempts_done} essai(s) ! 🎉\n"
+                f"➕ **+{gained} points** (50 pts + {bonus} pts bonus vitesse) | 🏆 Score total : **{wordle_total} pts**"
             )
             w = new_word()
             game_state[user_id] = {"word": w, "attempts": 0}
@@ -246,7 +302,95 @@ async def wordle(interaction: discord.Interaction, mot: str):
         )
 
 
+@bot.tree.command(name="find", description="Recherche une page Wikipédia et affiche son introduction")
+@app_commands.describe(mot="Le mot ou sujet à rechercher sur Wikipédia")
+async def find(interaction: discord.Interaction, mot: str):
+    await interaction.response.defer()
+    user_id = str(interaction.user.id)
+    query = mot.strip()
+
+    def fetch_wiki_sync(lang: str, title: str):
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "titles": title,
+            "prop": "extracts",
+            "exintro": True,
+            "explaintext": True,
+            "redirects": 1,
+            "format": "json",
+            "formatversion": 2,
+        })
+        url = f"https://{lang}.wikipedia.org/w/api.php?{params}"
+        print(f"[FIND] Requête : {url}")
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "DiscordBot/1.0 (https://github.com/bot; contact@example.com) Python/3"
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                pages = data.get("query", {}).get("pages", [])
+                if not pages:
+                    return None
+                page = pages[0]
+                if page.get("missing"):
+                    return None
+                extract = page.get("extract", "").strip()
+                if not extract:
+                    return None
+                title_found = page.get("title", title)
+                page_url = f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(title_found.replace(' ', '_'))}"
+                print(f"[FIND] Trouvé : {title_found}")
+                return {"title": title_found, "extract": extract, "url": page_url}
+        except Exception as e:
+            print(f"[FIND] Erreur : {e}")
+            return None
+
+    loop = __import__('asyncio').get_event_loop()
+    data = await loop.run_in_executor(None, fetch_wiki_sync, "fr", query)
+    lang_used = "fr"
+    if data is None or data.get("type") in ("disambiguation", "no-extract"):
+        data = await loop.run_in_executor(None, fetch_wiki_sync, "en", query)
+        lang_used = "en"
+
+    if data is None or data.get("type") in ("disambiguation", "no-extract"):
+        await interaction.followup.send(
+            f"❌ Aucune page Wikipédia trouvée pour **{query}**.",
+            ephemeral=True
+        )
+        return
+
+    title = data.get("title", query)
+    extract = data.get("extract", "Pas de texte disponible.")
+    page_url = data.get("content_urls", {}).get("desktop", {}).get("page", "")
+    lang_flag = "🇫🇷" if lang_used == "fr" else "🇬🇧"
+
+    # Tronquer si trop long pour Discord
+    if len(extract) > 1000:
+        extract = extract[:1000].rsplit(" ", 1)[0] + "…"
+
+    total = add_score(user_id, 1)
+    await interaction.followup.send(
+        f"{lang_flag} **{title}**\n\n{extract}\n\n"
+        f"🔗 {page_url}\n"
+        f"➕ **+1 point** | 🏆 Score total : **{total} pts**"
+    )
+
+
+@bot.tree.command(name="score", description="Affiche ton score total")
+async def score_cmd(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    total = scores.get(user_id, 0)
+    await interaction.response.send_message(
+        f"🏆 **Score de {interaction.user.display_name}** : **{total} pts**\n"
+        f"Tu peux gagner des points avec :\n"
+        f"🪙 `/coin` → +15 pts\n"
+        f"🎲 `/roll` → +X pts (selon le résultat du dé)\n"
+        f"📝 `/wordle` → +50 pts (+ bonus vitesse) en cas de victoire"
+    )
+
+
 if __name__ == "__main__":
+    load_scores()
     load_state()
 
     if not TOKEN:
